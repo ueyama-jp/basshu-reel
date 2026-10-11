@@ -14,7 +14,7 @@ import json
 import subprocess
 import sys
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 W, H, FPS = 1080, 1920, 30
 TOTAL_SECONDS = 12   # 動画全体の長さ(秒)。写真3枚で等分する
@@ -111,12 +111,9 @@ def load(scene, cfg):
 
 
 def plate(layer, y0, y1, strength):
-    """文字のうしろに敷く、半透明のグレーの下地。商品を隠しすぎないよう、文字のまわりだけに置く"""
-    mask = Image.new("L", (W, H), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([56, y0, W - 56, y1], radius=28, fill=strength)
-    mask = mask.filter(ImageFilter.GaussianBlur(6))
-    sheet = Image.new("RGBA", (W, H), PLATE + (0,))
-    sheet.putalpha(mask)
+    """文字のうしろに敷く、半透明のグレーの四角い下地(角は丸めず、ふちもぼかさない)"""
+    sheet = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(sheet).rectangle([56, y0, W - 56, y1], fill=PLATE + (strength,))
     return Image.alpha_composite(layer, sheet)
 
 
