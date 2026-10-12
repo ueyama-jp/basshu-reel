@@ -14,7 +14,7 @@ import json
 import subprocess
 import sys
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 W, H, FPS = 1080, 1920, 30
 TOTAL_SECONDS = 12   # 動画全体の長さ(秒)。写真3枚で等分する
@@ -43,6 +43,11 @@ def ease(t):
 # 文字を置く高さ。Instagramのリール画面で、下のアカウント名やキャプションに隠れない位置
 TEXT_Y = 1300
 PANEL_TOP = 1150   # 最後の画面で、商品名のまとまりが始まる高さ
+# 物撮り(白い背景の商品写真)は切らずに小さめに置き、地を白にして、文字を写真の上下に置く
+# 写真の大きさ(幅)、写真の上端、上の文字の中心、下の文字の上端
+STUDIO = dict(PW=900, PY=400, TOP_Y=300, BOT_Y=1340)
+STUDIO_INK = (51, 51, 51)        # 物撮りの画面の文字の色
+STUDIO_SUB = (112, 112, 112)     # 物撮りの画面の小さな文字の色
 LABEL_Y = 270      # 「イメージ画像」の札の高さ(上の画面部品に隠れない位置)
 
 
@@ -154,6 +159,90 @@ def brand_mark(layer, cfg, y, height, fill, font_size):
         layer.alpha_composite(lg, dest=(round((W - lg.width) / 2), round(y)))
     else:
         spaced(ImageDraw.Draw(layer), (W / 2, y), cfg.get("brand", "BasShu"), font(SANS, font_size), fill, spacing=14)
+
+
+def studio_bg(img):
+    """写真の四辺がほぼ白で均一なら、物撮りとみなして、その地の色を返す(シーン画像なら None)"""
+    im = img.convert("RGB")
+    w, h = im.size
+    b = max(2, round(min(w, h) * 0.03))           # 四辺の帯の太さ(3%)
+    strips = [im.crop((0, 0, w, b)), im.crop((0, h - b, w, h)), im.crop((0, 0, b, h)), im.crop((w - b, 0, w, h))]
+    px = []
+    for st in strips:
+        raw = st.resize((max(1, st.width // 4), max(1, st.height // 4))).tobytes()
+        px += [tuple(raw[i:i + 3]) for i in range(0, len(raw), 3)]
+    lum = [0.299 * r + 0.587 * g + 0.114 * bl for r, g, bl in px]
+    mean = sum(lum) / len(lum)
+    spread = (sum((x - mean) ** 2 for x in lum) / len(lum)) ** 0.5
+    chroma = sum(max(p) - min(p) for p in px) / len(px)
+    if mean >= 222 and spread <= 14 and chroma <= 16:   # 明るく、ばらつきが小さく、色みのない白
+        n = len(px)
+        return tuple(round(sum(p[i] for p in px) / n) for i in range(3))
+    return None
+
+
+def place(img, z, bg=None):
+    """写真を画面に置く。物撮り(bg あり)は、その地の色の上に、小さめに切らずに置く。
+    それ以外(シーン画像、動画、縦長)は画面いっぱいに置く"""
+    if bg is None:
+        return cover(img, z)
+    canvas = Image.new("RGB", (W, H), bg)
+    w = round(STUDIO["PW"] * z)
+    h = round(w * img.height / img.width)
+    cy = STUDIO["PY"] + STUDIO["PW"] * img.height / img.width / 2
+    canvas.paste(img.convert("RGB").resize((w, h), Image.LANCZOS), (round((W - w) / 2), round(cy - h / 2)))
+    return canvas
+
+
+def tinted_logo(cfg, height, color):
+    """白いロゴを、白い地でも見える色に塗り替える"""
+    lg = logo(cfg, height)
+    if lg is None:
+        return None
+    solid = Image.new("RGBA", lg.size, color + (255,))
+    solid.putalpha(lg.getchannel("A"))
+    return solid
+
+
+def studio_overlay(scene, cfg):
+    """物撮りの画面の文字。地が白いので下地は敷かず、濃い色の文字を写真の上と下に置く"""
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    kind = scene.get("overlay")
+    top, bot = STUDIO["TOP_Y"], STUDIO["BOT_Y"]
+    ink, sub = STUDIO_INK + (255,), STUDIO_SUB + (255,)
+
+    def mark():
+        lg = tinted_logo(cfg, z(52), STUDIO_INK)
+        if lg is not None:
+            layer.alpha_composite(lg, dest=(round((W - lg.width) / 2), round(top - lg.height / 2)))
+        else:
+            spaced(d, (W / 2, top - z(16)), cfg.get("brand", "BasShu"), font(SANS, z(30)), sub, spacing=14)
+
+    if kind == "copy":       # ひとことは写真の上、小さな2〜3行は写真の下
+        f = fit_font(d, scene["text"], SERIF, z(68), W - 160, spacing=z(8))
+        spaced(d, (W / 2, top - f.size * 0.62), scene["text"], f, ink, spacing=z(8))
+        for i, line in enumerate(clean_lines(scene.get("lines"))):
+            f = fit_font(d, line, SERIF, z(35), W - 200, spacing=z(4))
+            spaced(d, (W / 2, bot + z(52) * i), line, f, sub, spacing=z(4))
+    elif kind in ("caption", "panel"):   # ロゴは写真の上、商品名などは写真の下
+        mark()
+        f = fit_font(d, cfg["name"] if kind == "panel" else scene["text"], SERIF, z(58), W - 160, spacing=z(4))
+        spaced(d, (W / 2, bot), cfg["name"] if kind == "panel" else scene["text"], f, ink, spacing=z(4))
+        y = bot + z(80)
+        if kind == "panel" and cfg.get("variant"):
+            spaced(d, (W / 2, y), cfg["variant"], font(SANS, z(32)), sub, spacing=z(6))
+            y += z(58)
+        if kind == "panel" and cfg.get("price"):
+            spaced(d, (W / 2, y), cfg["price"], font(SERIF, z(44)), ink, spacing=z(3))
+            y += z(66)
+        tag = cfg.get("tagline") if kind == "panel" else scene.get("sub")
+        if tag:
+            f = fit_font(d, tag, SERIF, z(34), W - 220, spacing=z(5))
+            spaced(d, (W / 2, y), tag, f, sub, spacing=z(5))
+    if scene.get("ai_label"):
+        ai_label(d)
+    return layer
 
 
 def clean_lines(v):
@@ -298,11 +387,15 @@ def render(cfg, out_path):
 
     imgs = [load(s, cfg) for s in sc]
 
-    def frame_of(k, z):
-        """k枚目の写真を、画面いっぱいに置く(正方形の写真は左右が切れる)"""
-        return cover(imgs[k], z)
+    bgs = [None if isinstance(im, Clip) or sc[k].get("card") else studio_bg(im) for k, im in enumerate(imgs)]
 
-    ovs = [overlay(s, cfg, None if isinstance(imgs[k], Clip) else frame_of(k, 1.0))
+    def frame_of(k, z):
+        """k枚目の写真を画面に置く。物撮りは白い地に切らずに、それ以外は画面いっぱいに"""
+        if sc[k].get("card"):
+            return imgs[k]
+        return place(imgs[k], z, bgs[k])
+
+    ovs = [studio_overlay(s, cfg) if bgs[k] else overlay(s, cfg, None if isinstance(imgs[k], Clip) else frame_of(k, 1.0))
            for k, s in enumerate(sc)]
 
     cmd = [
@@ -345,7 +438,7 @@ def render(cfg, out_path):
         edge = min(ease(t / 0.3), ease((total - t) / 0.3))
         rgb = frame.convert("RGB")
         if edge < 1:
-            rgb = Image.blend(Image.new("RGB", (W, H), GRAY), rgb, edge)
+            rgb = Image.blend(Image.new("RGB", (W, H), bgs[0 if t < 1 else -1] or GRAY), rgb, edge)
         proc.stdin.write(rgb.tobytes())
     proc.stdin.close()
     for im in imgs:
@@ -356,15 +449,17 @@ def render(cfg, out_path):
     print(f"できました: {out_path}({total:.1f}秒)")
 
 
-# カルーセル(写真の投稿)の大きさと、文字の位置。Instagramのフィードで一番大きく見える4:5
-CAROUSEL = dict(H=1350, TEXT_Y=930, PANEL_TOP=960, LABEL_Y=48)
+# カルーセル(写真の投稿)の大きさと、文字の位置。サイトの写真が正方形なので、切れない正方形(1:1)にする
+CAROUSEL = dict(H=1080, TEXT_Y=700, PANEL_TOP=700, LABEL_Y=40)
+CAROUSEL_STUDIO = dict(PW=700, PY=165, TOP_Y=92, BOT_Y=905)   # 正方形の画面での物撮りの置き方
 
 
 def render_stills(cfg, out_path):
     """カルーセル用に、3場面を1枚ずつの写真(JPEG)として書き出す。
     out_path が 20261012-xxx.jpg なら、20261012-xxx-1.jpg 〜 -3.jpg ができる"""
-    global H, TEXT_Y, PANEL_TOP, LABEL_Y
+    global H, TEXT_Y, PANEL_TOP, LABEL_Y, STUDIO
     H, TEXT_Y, PANEL_TOP, LABEL_Y = (CAROUSEL[k] for k in ("H", "TEXT_Y", "PANEL_TOP", "LABEL_Y"))
+    STUDIO = CAROUSEL_STUDIO
     sc = scenes_for(cfg)
     stem = out_path[:-4] if out_path.lower().endswith(".jpg") else out_path
     outs = []
@@ -378,7 +473,14 @@ def render_stills(cfg, out_path):
         elif s.get("card"):
             base = im
         else:
-            base = cover(im, 1.0)
+            bg = studio_bg(im)
+            base = place(im, 1.0, bg)
+            if bg:
+                out = Image.alpha_composite(base.convert("RGBA"), studio_overlay(s, cfg)).convert("RGB")
+                path = f"{stem}-{k + 1}.jpg"
+                out.save(path, quality=92)
+                outs.append(path)
+                continue
         out = Image.alpha_composite(base.convert("RGBA"), overlay(s, cfg, base)).convert("RGB")
         path = f"{stem}-{k + 1}.jpg"
         out.save(path, quality=92)
