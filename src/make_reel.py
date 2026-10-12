@@ -11,6 +11,7 @@
 動きは「ゆっくりしたズーム」と「クロスフェード」だけ。凝った演出は入れない。
 """
 import json
+import math
 import subprocess
 import sys
 
@@ -215,6 +216,41 @@ def place(img, z, bg=None):
     return canvas
 
 
+# 動画での物撮りの動き: 写真を大きめに置き、ゆっくり流れながら少しだけ拡大する
+# (横に広い写真は左→右、縦長の写真は上→下)。動く範囲は写真用の枠の中だけで、上下の文字には重ならない
+PAN = dict(START=1.12, END=1.22)      # 横に広い写真: 枠に収まる大きさに対する倍率(始まり → 終わり)
+PAN_TALL = dict(START=0.86, END=0.92)  # 縦長の写真: 画面の横幅に対する写真の幅(始まり → 終わり)
+
+
+def soft(t):
+    """とてもなめらかに始まり、なめらかに終わる動き(急がない)"""
+    t = max(0.0, min(1.0, t))
+    return 0.5 - 0.5 * math.cos(math.pi * t)
+
+
+def place_pan(img, p, bg):
+    """物撮りを、ゆっくり流れながら拡大して置く(p は 0〜1 の進み具合)。
+    1ピクセル未満の動きも描けるように、位置と大きさをなめらかに変える"""
+    im = trim_white(img, bg)
+    top, ph = STUDIO["PY"] - 20, STUDIO["PH"] + 40          # 動く範囲(画面の横幅いっぱい × 写真用の枠の高さ)
+    fit = min(W / im.width, ph / im.height)
+    e = soft(p)
+    if im.width * fit * PAN["START"] > W:
+        # 横に広い写真: 拡大しながら左→右へ。上下が切れすぎないよう、高さは枠の1.15倍まで
+        sc = min(fit * (PAN["START"] + (PAN["END"] - PAN["START"]) * e), ph * 1.15 / im.height)
+    else:
+        # 縦長の写真: 横幅を画面の9割ほどまで大きくし、上→下へ
+        sc = (W / im.width) * (PAN_TALL["START"] + (PAN_TALL["END"] - PAN_TALL["START"]) * e)
+    w, h = im.width * sc, im.height * sc
+    x = (W - w) * e if w > W else (W - w) / 2               # はみ出す分だけ、左端 → 右端へ流す
+    y = (ph - h) * e if h > ph else (ph - h) / 2            # はみ出す分だけ、上端 → 下端へ流す
+    box = im.transform((W, ph), Image.AFFINE, (1 / sc, 0, -x / sc, 0, 1 / sc, -y / sc),
+                       resample=Image.BICUBIC, fillcolor=bg)
+    canvas = Image.new("RGB", (W, H), bg)
+    canvas.paste(box, (0, top))
+    return canvas
+
+
 def tinted_logo(cfg, height, color):
     """白いロゴを、白い地でも見える色に塗り替える"""
     lg = logo(cfg, height)
@@ -410,10 +446,12 @@ def render(cfg, out_path):
 
     bgs = [None if isinstance(im, Clip) or sc[k].get("card") else studio_bg(im) for k, im in enumerate(imgs)]
 
-    def frame_of(k, z):
+    def frame_of(k, z, p=None):
         """k枚目の写真を画面に置く。物撮りは白い地に切らずに、それ以外は画面いっぱいに"""
         if sc[k].get("card"):
             return imgs[k]
+        if bgs[k] and p is not None:
+            return place_pan(imgs[k], p, bgs[k])   # 物撮りは、左から右へ流れながら拡大
         return place(imgs[k], z, bgs[k])
 
     ovs = [studio_overlay(s, cfg) if bgs[k] else overlay(s, cfg, None if isinstance(imgs[k], Clip) else frame_of(k, 1.0))
@@ -443,7 +481,7 @@ def render(cfg, out_path):
             base = imgs[k].next().convert("RGBA")
         else:
             z = 1.0 if sc[k].get("card") else 1 + zoom_amt * (local_t / (hold + fade / 2))
-            base = frame_of(k, z).convert("RGBA")
+            base = frame_of(k, z, min(1.0, local_t / (hold + fade / 2))).convert("RGBA")
         return Image.alpha_composite(base, with_alpha(ovs[k], ease((local_t - text_delay) / 0.6)))
 
     # k枚目が出始める時刻(前の写真とのクロスフェードの開始)
