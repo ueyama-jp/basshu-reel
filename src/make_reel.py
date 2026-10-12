@@ -14,7 +14,7 @@ import json
 import subprocess
 import sys
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 W, H, FPS = 1080, 1920, 30
 TOTAL_SECONDS = 12   # 動画全体の長さ(秒)。写真3枚で等分する
@@ -44,8 +44,9 @@ def ease(t):
 TEXT_Y = 1300
 PANEL_TOP = 1150   # 最後の画面で、商品名のまとまりが始まる高さ
 # 物撮り(白い背景の商品写真)は切らずに小さめに置き、地を白にして、文字を写真の上下に置く
-# 写真の大きさ(幅)、写真の上端、上の文字の中心、下の文字の上端
-STUDIO = dict(PW=900, PY=400, TOP_Y=300, BOT_Y=1340)
+# 写真の余白(白い部分)は自動で切り詰め、商品が大きく見えるようにする
+# 写真を収める枠の幅と高さ、枠の上端、上の文字の中心、下の文字の上端
+STUDIO = dict(PW=960, PH=880, PY=410, TOP_Y=300, BOT_Y=1340)
 STUDIO_INK = (51, 51, 51)        # 物撮りの画面の文字の色
 STUDIO_SUB = (112, 112, 112)     # 物撮りの画面の小さな文字の色
 LABEL_Y = 270      # 「イメージ画像」の札の高さ(上の画面部品に隠れない位置)
@@ -182,16 +183,35 @@ def studio_bg(img):
     return None
 
 
+_TRIM = {}
+
+
+def trim_white(img, bg):
+    """物撮りのまわりの白い余白を切り詰める(商品と影は残し、少しだけ余白をつける)"""
+    key = (id(img), bg)
+    if key not in _TRIM:
+        im = img.convert("RGB")
+        diff = ImageChops.difference(im, Image.new("RGB", im.size, bg)).convert("L")
+        box = diff.point(lambda v: 255 if v > 18 else 0).getbbox()
+        if box:
+            pad = round(max(box[2] - box[0], box[3] - box[1]) * 0.05)
+            box = (max(0, box[0] - pad), max(0, box[1] - pad), min(im.width, box[2] + pad), min(im.height, box[3] + pad))
+            im = im.crop(box)
+        _TRIM[key] = im
+    return _TRIM[key]
+
+
 def place(img, z, bg=None):
-    """写真を画面に置く。物撮り(bg あり)は、その地の色の上に、小さめに切らずに置く。
+    """写真を画面に置く。物撮り(bg あり)は、余白を切り詰めて、その地の色の上に切らずに大きく置く。
     それ以外(シーン画像、動画、縦長)は画面いっぱいに置く"""
     if bg is None:
         return cover(img, z)
     canvas = Image.new("RGB", (W, H), bg)
-    w = round(STUDIO["PW"] * z)
-    h = round(w * img.height / img.width)
-    cy = STUDIO["PY"] + STUDIO["PW"] * img.height / img.width / 2
-    canvas.paste(img.convert("RGB").resize((w, h), Image.LANCZOS), (round((W - w) / 2), round(cy - h / 2)))
+    im = trim_white(img, bg)
+    scale = min(STUDIO["PW"] / im.width, STUDIO["PH"] / im.height) * z
+    w, h = round(im.width * scale), round(im.height * scale)
+    cy = STUDIO["PY"] + STUDIO["PH"] / 2
+    canvas.paste(im.resize((w, h), Image.LANCZOS), (round((W - w) / 2), round(cy - h / 2)))
     return canvas
 
 
@@ -452,7 +472,7 @@ def render(cfg, out_path):
 
 # カルーセル(写真の投稿)の大きさと、文字の位置。サイトの写真が正方形なので、切れない正方形(1:1)にする
 CAROUSEL = dict(H=1080, TEXT_Y=700, PANEL_TOP=700, LABEL_Y=40)
-CAROUSEL_STUDIO = dict(PW=700, PY=165, TOP_Y=92, BOT_Y=905)   # 正方形の画面での物撮りの置き方
+CAROUSEL_STUDIO = dict(PW=820, PH=690, PY=170, TOP_Y=92, BOT_Y=905)   # 正方形の画面での物撮りの置き方
 
 
 def render_stills(cfg, out_path):
