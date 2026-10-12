@@ -46,8 +46,9 @@ PANEL_TOP = 1150   # 最後の画面で、商品名のまとまりが始まる�
 LABEL_Y = 270      # 「イメージ画像」の札の高さ(上の画面部品に隠れない位置)
 
 
-def cover(img, zoom, h=H):
+def cover(img, zoom, h=None):
     """画像を枠(幅W×高さh)いっぱいに切り出す。zoom=1.0 でちょうど、1.06 で少し寄る"""
+    h = h or H
     iw, ih = img.size
     scale = max(W / iw, h / ih) * zoom
     cw, ch = W / scale, h / scale
@@ -125,6 +126,36 @@ def text_style(layer, base, y0, y1, matted=False):
     return layer, WHITE + (255,), WHITE + (232,)
 
 
+_LOGO = {}
+
+
+def logo(cfg, height):
+    """ロゴ(白、背景透明のPNG)を指定の高さで返す。ロゴがなければ None(ブランド名の文字で代用)"""
+    path = cfg.get("logo")
+    if not path:
+        return None
+    if path not in _LOGO:
+        try:
+            _LOGO[path] = Image.open(path).convert("RGBA")
+        except OSError:
+            _LOGO[path] = None
+    src = _LOGO[path]
+    if src is None:
+        return None
+    src = src.crop(src.getchannel("A").getbbox() or (0, 0, *src.size))   # 余白を切る
+    w = max(1, round(src.width * height / src.height))
+    return src.resize((w, height), Image.LANCZOS)
+
+
+def brand_mark(layer, cfg, y, height, fill, font_size):
+    """ブランド名を中央に置く。ロゴがあればロゴ、なければ字間をあけた文字"""
+    lg = logo(cfg, height)
+    if lg is not None:
+        layer.alpha_composite(lg, dest=(round((W - lg.width) / 2), round(y)))
+    else:
+        spaced(ImageDraw.Draw(layer), (W / 2, y), cfg.get("brand", "BasShu"), font(SANS, font_size), fill, spacing=14)
+
+
 def clean_lines(v):
     """小さく添える文章(2〜3行)を、行のリストにそろえる"""
     if isinstance(v, str):
@@ -142,52 +173,60 @@ def ai_label(d):
     d.text((x0 + 22, y0 + 6), label, font=f, fill=(255, 255, 255, 240))
 
 
+TS = 0.78   # 動画・写真に入る文字の大きさの倍率(1.0 が元の大きさ。小さくするほど控えめ)
+
+
+def z(n):
+    """大きさや間隔に、文字の倍率をかける"""
+    return round(n * TS)
+
+
 def overlay(scene, cfg, base=None, matted=False):
     """1場面に重ねる文字の層をつくる。base は文字が重なる写真(明るさを見るため)"""
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     kind = scene.get("overlay")
-    if kind == "copy":      # 大きめのひとこと + 小さく添える2〜3行
+    if kind == "copy":      # ひとこと + 小さく添える2〜3行
         lines = clean_lines(scene.get("lines"))
-        top = TEXT_Y - 44 * len(lines)          # 行が増えるぶん、全体を上へ
-        bottom = top + 100 + (36 + 58 * len(lines) if lines else 0)
+        top = TEXT_Y - z(44) * len(lines)       # 行が増えるぶん、全体を上へ
+        bottom = top + z(100) + (z(36) + z(58) * len(lines) if lines else 0)
         layer, ink, sub = text_style(layer, base, top, bottom, matted)
         d = ImageDraw.Draw(layer)
-        f = fit_font(d, scene["text"], SERIF, 68, W - 200, spacing=8)
-        spaced(d, (W / 2, top + 14), scene["text"], f, ink, spacing=8)
+        f = fit_font(d, scene["text"], SERIF, z(68), W - 200, spacing=z(8))
+        spaced(d, (W / 2, top + z(14)), scene["text"], f, ink, spacing=z(8))
         for i, line in enumerate(lines):
-            f = fit_font(d, line, SERIF, 35, W - 220, spacing=4)
-            spaced(d, (W / 2, top + 132 + 58 * i), line, f, sub, spacing=4)
+            f = fit_font(d, line, SERIF, z(35), W - 220, spacing=z(4))
+            spaced(d, (W / 2, top + z(132) + z(58) * i), line, f, sub, spacing=z(4))
     elif kind == "caption":  # 小さめの商品名
-        bottom = TEXT_Y + 124 + (70 if scene.get("sub") else 0)
+        bottom = TEXT_Y + z(124) + (z(70) if scene.get("sub") else 0)
         layer, ink, sub = text_style(layer, base, TEXT_Y, bottom, matted)
+        brand_mark(layer, cfg, TEXT_Y - z(8), z(46), sub, z(28))
         d = ImageDraw.Draw(layer)
-        spaced(d, (W / 2, TEXT_Y), cfg.get("brand", "BasShu"), font(SANS, 28), sub, spacing=14)
-        f = fit_font(d, scene["text"], SERIF, 50, W - 200, spacing=4)
-        spaced(d, (W / 2, TEXT_Y + 60), scene["text"], f, ink, spacing=4)
+        f = fit_font(d, scene["text"], SERIF, z(50), W - 200, spacing=z(4))
+        spaced(d, (W / 2, TEXT_Y + z(60)), scene["text"], f, ink, spacing=z(4))
         if scene.get("sub"):  # 商品名の下に添える、気の利いたひとこと
-            f = fit_font(d, scene["sub"], SERIF, 36, W - 240, spacing=5)
-            spaced(d, (W / 2, TEXT_Y + 146), scene["sub"], f, sub, spacing=5)
+            f = fit_font(d, scene["sub"], SERIF, z(36), W - 240, spacing=z(5))
+            spaced(d, (W / 2, TEXT_Y + z(146)), scene["sub"], f, sub, spacing=z(5))
     elif kind == "panel":    # 商品名・色・価格。写真は画面いっぱい、文字のうしろに半透明のグレーの下地
         top = PANEL_TOP
-        y_end = top + 244 + (72 if cfg.get("variant") else 0) + (92 if cfg.get("price") else 0) \
-            + (64 if cfg.get("tagline") else 0)
-        layer = plate(layer, top + 6, y_end + 34, PLATE_ALPHA)
-        d = ImageDraw.Draw(layer)
+        y_end = top + z(244) + (z(72) if cfg.get("variant") else 0) + (z(92) if cfg.get("price") else 0) \
+            + (z(64) if cfg.get("tagline") else 0)
+        layer = plate(layer, top + z(6), y_end + z(34), PLATE_ALPHA)
         soft = WHITE + (228,)
-        spaced(d, (W / 2, top + 54), cfg.get("brand", "BasShu"), font(SANS, 30), soft, spacing=14)
-        d.line([(W / 2 - 36, top + 114), (W / 2 + 36, top + 114)], fill=soft, width=2)
-        f = fit_font(d, cfg["name"], SERIF, 58, W - 200, spacing=4)
-        spaced(d, (W / 2, top + 148), cfg["name"], f, WHITE + (255,), spacing=4)
-        y = top + 244
+        brand_mark(layer, cfg, top + z(44), z(52), soft, z(30))
+        d = ImageDraw.Draw(layer)
+        d.line([(W / 2 - z(36), top + z(114)), (W / 2 + z(36), top + z(114))], fill=soft, width=2)
+        f = fit_font(d, cfg["name"], SERIF, z(58), W - 200, spacing=z(4))
+        spaced(d, (W / 2, top + z(148)), cfg["name"], f, WHITE + (255,), spacing=z(4))
+        y = top + z(244)
         if cfg.get("variant"):
-            spaced(d, (W / 2, y), cfg["variant"], font(SANS, 34), soft, spacing=6)
-            y += 72
+            spaced(d, (W / 2, y), cfg["variant"], font(SANS, z(34)), soft, spacing=z(6))
+            y += z(72)
         if cfg.get("price"):
-            spaced(d, (W / 2, y), cfg["price"], font(SERIF, 50), WHITE + (255,), spacing=3)
-            y += 92
+            spaced(d, (W / 2, y), cfg["price"], font(SERIF, z(50)), WHITE + (255,), spacing=z(3))
+            y += z(92)
         if cfg.get("tagline"):  # 価格の下に添えるひとこと
-            f = fit_font(d, cfg["tagline"], SERIF, 36, W - 240, spacing=5)
-            spaced(d, (W / 2, y), cfg["tagline"], f, soft, spacing=5)
+            f = fit_font(d, cfg["tagline"], SERIF, z(36), W - 240, spacing=z(5))
+            spaced(d, (W / 2, y), cfg["tagline"], f, soft, spacing=z(5))
     if scene.get("ai_label"):
         ai_label(ImageDraw.Draw(layer))
     return layer
@@ -195,22 +234,22 @@ def overlay(scene, cfg, base=None, matted=False):
 
 def card(cfg):
     """告知型の、文字が主役の画面"""
-    img = Image.new("RGB", (W, H), GRAY)
-    d = ImageDraw.Draw(img)
+    img = Image.new("RGBA", (W, H), GRAY + (255,))
     lines = cfg.get("notice_lines", [])
-    block = 150 + 110 + 84 * len(lines)
-    y = (H - block) / 2 - 40
-    spaced(d, (W / 2, y), cfg.get("brand", "BasShu"), font(SANS, 32), (232, 232, 232), spacing=14)
-    d.line([(W / 2 - 36, y + 70), (W / 2 + 36, y + 70)], fill=(232, 232, 232), width=2)
+    block = z(150) + z(110) + z(84) * len(lines)
+    y = (H - block) / 2 - z(40)
+    brand_mark(img, cfg, y - z(14), z(60), (232, 232, 232), z(32))
+    d = ImageDraw.Draw(img)
+    d.line([(W / 2 - z(36), y + z(70)), (W / 2 + z(36), y + z(70))], fill=(232, 232, 232), width=2)
     title = cfg.get("notice_title", "")
-    f = fit_font(d, title, SERIF, 84, W - 180, spacing=6)
-    spaced(d, (W / 2, y + 130), title, f, WHITE, spacing=6)
-    yy = y + 290
+    f = fit_font(d, title, SERIF, z(84), W - 180, spacing=z(6))
+    spaced(d, (W / 2, y + z(130)), title, f, WHITE, spacing=z(6))
+    yy = y + z(290)
     for line in lines:
-        f = fit_font(d, line, SANS, 42, W - 200, spacing=3)
-        spaced(d, (W / 2, yy), line, f, WHITE, spacing=3)
-        yy += 84
-    return img
+        f = fit_font(d, line, SANS, z(42), W - 200, spacing=z(3))
+        spaced(d, (W / 2, yy), line, f, WHITE, spacing=z(3))
+        yy += z(84)
+    return img.convert("RGB")
 
 
 def scenes_for(cfg):
@@ -317,8 +356,43 @@ def render(cfg, out_path):
     print(f"できました: {out_path}({total:.1f}秒)")
 
 
+# カルーセル(写真の投稿)の大きさと、文字の位置。Instagramのフィードで一番大きく見える4:5
+CAROUSEL = dict(H=1350, TEXT_Y=930, PANEL_TOP=960, LABEL_Y=48)
+
+
+def render_stills(cfg, out_path):
+    """カルーセル用に、3場面を1枚ずつの写真(JPEG)として書き出す。
+    out_path が 20261012-xxx.jpg なら、20261012-xxx-1.jpg 〜 -3.jpg ができる"""
+    global H, TEXT_Y, PANEL_TOP, LABEL_Y
+    H, TEXT_Y, PANEL_TOP, LABEL_Y = (CAROUSEL[k] for k in ("H", "TEXT_Y", "PANEL_TOP", "LABEL_Y"))
+    sc = scenes_for(cfg)
+    stem = out_path[:-4] if out_path.lower().endswith(".jpg") else out_path
+    outs = []
+    for k, s in enumerate(sc):
+        im = load(s, cfg)
+        if isinstance(im, Clip):              # 動画の素材は、1秒あたりのコマを使う
+            for _ in range(FPS):
+                frame = im.next()
+            im.proc.kill()
+            base = cover(frame, 1.0)
+        elif s.get("card"):
+            base = im
+        else:
+            base = cover(im, 1.0)
+        out = Image.alpha_composite(base.convert("RGBA"), overlay(s, cfg, base)).convert("RGB")
+        path = f"{stem}-{k + 1}.jpg"
+        out.save(path, quality=92)
+        outs.append(path)
+    print("できました: " + ", ".join(outs))
+    return outs
+
+
 if __name__ == "__main__":
     if len(sys.argv) != 3:
         sys.exit(__doc__)
     with open(sys.argv[1], encoding="utf-8") as fh:
-        render(json.load(fh), sys.argv[2])
+        conf = json.load(fh)
+    if conf.get("format") == "carousel":
+        render_stills(conf, sys.argv[2])
+    else:
+        render(conf, sys.argv[2])
