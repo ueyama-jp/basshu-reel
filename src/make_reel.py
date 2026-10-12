@@ -175,7 +175,8 @@ def studio_bg(img):
     mean = sum(lum) / len(lum)
     spread = (sum((x - mean) ** 2 for x in lum) / len(lum)) ** 0.5
     chroma = sum(max(p) - min(p) for p in px) / len(px)
-    if mean >= 222 and spread <= 14 and chroma <= 16:   # 明るく、ばらつきが小さく、色みのない白
+    # 明るく、ばらつきが小さく、色みのない白。商品がふちに少しかかる物撮りも拾えるよう、とても白ければ少しのばらつきは許す
+    if (mean >= 222 and spread <= 14 and chroma <= 16) or (mean >= 240 and spread <= 28 and chroma <= 6):
         n = len(px)
         return tuple(round(sum(p[i] for p in px) / n) for i in range(3))
     return None
