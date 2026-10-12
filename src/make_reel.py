@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BasShu リール動画メーカー(4テンプレート / 素材3枚 / 12秒)
+"""BasShu リール動画メーカー(4テンプレート / 素材3枚 / 13秒)
 
 テンプレート: slide(スライド型) / zoom(ゆっくりズーム型) /
               detail(ディテール型) / notice(告知型)
@@ -18,7 +18,7 @@ import sys
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 W, H, FPS = 1080, 1920, 30
-TOTAL_SECONDS = 12   # 動画全体の長さ(秒)。写真3枚で等分する
+TOTAL_SECONDS = 13   # 動画全体の長さ(秒)。写真3枚で等分する
 
 # 色(文字は白、地と下地はグレー)
 WHITE = (255, 255, 255)      # 動画の文字の色
