@@ -71,19 +71,23 @@ def build(job, folder):
     for key, spec in job.get("files", {}).items():
         cfg[key] = fetch(spec, folder, key)
     cfg["bgm"] = str(BGMS[int(cfg.get("bgm_index") or 0) % len(BGMS)]) if BGMS else ""
+    logo = ROOT / "assets" / "logo.png"     # ブランドのロゴ(白、背景透明)。なければ文字で入る
+    cfg["logo"] = str(logo) if logo.exists() else ""
     cfg_path = folder / "config.json"
     cfg_path.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
     OUT.mkdir(parents=True, exist_ok=True)
     out = OUT / job["file_name"]
     subprocess.run([sys.executable, str(ROOT / "src" / "make_reel.py"), str(cfg_path), str(out)],
                    check=True, capture_output=True, text=True)
-    return out
+    if cfg.get("format") == "carousel":      # カルーセルは写真が複数枚(-1.jpg, -2.jpg …)
+        return sorted(OUT.glob(out.stem + "-*.jpg"))
+    return [out]
 
 
 def prune():
-    """古い動画を消す(ファイル名の先頭8桁が日付)"""
+    """古い動画と写真を消す(ファイル名の先頭8桁が日付)"""
     limit = datetime.date.today() - datetime.timedelta(days=KEEP_DAYS)
-    for f in OUT.glob("*.mp4"):
+    for f in list(OUT.glob("*.mp4")) + list(OUT.glob("*.jpg")):
         try:
             if datetime.datetime.strptime(f.name[:8], "%Y%m%d").date() < limit:
                 f.unlink()
@@ -121,9 +125,9 @@ def main():
             break
         try:
             with tempfile.TemporaryDirectory() as tmp:
-                out = build(job, pathlib.Path(tmp))
-            done.append((job["id"], out.name))
-            print(f"できました: {out.name}")
+                outs = build(job, pathlib.Path(tmp))
+            done.append((job["id"], [o.name for o in outs], job["config"].get("format") == "carousel"))
+            print("できました: " + ", ".join(o.name for o in outs))
         except Exception as e:  # 失敗はGoogle側に伝え、スタッフにメールが届く
             detail = getattr(e, "stderr", "") or traceback.format_exc()
             print(detail, file=sys.stderr)
@@ -131,8 +135,11 @@ def main():
     prune()
     if done:
         publish_files()
-        for job_id, name in done:
-            report({"action": "done", "id": job_id, "video_url": f"{PAGES}/v/{name}"})
+        for job_id, names, carousel in done:
+            if carousel:
+                report({"action": "done", "id": job_id, "image_urls": [f"{PAGES}/v/{n}" for n in names]})
+            else:
+                report({"action": "done", "id": job_id, "video_url": f"{PAGES}/v/{names[0]}"})
 
 
 if __name__ == "__main__":
